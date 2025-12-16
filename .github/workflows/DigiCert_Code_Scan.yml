@@ -91,13 +91,13 @@ jobs:
 
       - name: Run Gitleaks (SARIF output)
         run: |
-          # Add --no-git to scan only the working tree (not git history)
           gitleaks detect \
             --source . \
             --report-format sarif \
             --report-path gitleaks.sarif \
             --no-banner \
-            --redact || true
+            --redact || true \
+            --no-git
 
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
