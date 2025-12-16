@@ -63,21 +63,44 @@ jobs:
           name: sbom-cdxgen
           path: |
             sbom-cdxgen.cyclonedx.json
-  gitleaks:
+  gitleaks-sarif:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # required to upload SARIF to code scanning
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-      - name: Run Gitleaks (SARIF Output)
+        with:
+          fetch-depth: 0  # full history; remove or add --no-git below if you only want filesystem
+
+      - name: Install jq
         run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Install gitleaks (OSS)
+        env:
+          GITLEAKS_VERSION: 8.18.4
+        run: |
+          set -e
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz
+          test -f gitleaks && chmod +x gitleaks && sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run Gitleaks (SARIF output)
+        run: |
+          # Add --no-git to scan only the working tree (not git history)
           gitleaks detect \
             --source . \
             --report-format sarif \
             --report-path gitleaks.sarif \
-            || true  # prevents workflow failure
+            --no-banner \
+            --redact || true
+
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: gitleaks.sarif
+          wait-for-processing: true
