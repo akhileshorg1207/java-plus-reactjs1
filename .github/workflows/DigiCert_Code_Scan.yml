@@ -38,13 +38,13 @@ jobs:
         with:
           category: '/language:${{matrix.language}}'
           upload: false
-          output: "codeql-results/codeql-${{ matrix.language }}.sarif"
+          output: "codeql-${{ matrix.language }}.sarif"
       
       # Gather SARIF files for all languages in a zip file (run only after matrix completes)
       - name: Zip SARIF results
         if: always()
         run: |
-          zip -j codeql-sarif-results.zip codeql-results/*.sarif || echo "No SARIF files found"
+          zip codeql-sarif-results.zip *.sarif || echo "No SARIF files found"
 
       - name: Upload zipped SARIF results as artifact
         if: always()
