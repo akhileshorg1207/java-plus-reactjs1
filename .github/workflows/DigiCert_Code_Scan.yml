@@ -39,13 +39,16 @@ jobs:
           category: '/language:${{matrix.language}}'
           upload: false
           output: "codeql-${{ matrix.language }}.sarif"
-      
-      # Gather SARIF files for all languages in a zip file (run only after matrix completes)
+    
+  artifact:
+    name: Prepare Sarif Artifact
+    runs-on: ubuntu-latest
+    steps:
       - name: Zip SARIF results
-        if: always()
+        if:  always()
         run: |
           zip codeql-sarif-results.zip *.sarif || echo "No SARIF files found"
-
+  
       - name: Upload zipped SARIF results as artifact
         if: always()
         uses: actions/upload-artifact@v4
