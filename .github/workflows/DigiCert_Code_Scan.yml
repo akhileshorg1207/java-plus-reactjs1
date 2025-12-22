@@ -50,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: codeql-results-\${{ matrix.language }}
-          path: \${{ steps.analyze.outputs.sarif-output }}
+          path: \${{ steps.analyze.outputs.sarif-output }}/\${{ matrix.language }}.sarif
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
