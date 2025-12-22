@@ -46,11 +46,16 @@ jobs:
           category: '/language:\${{matrix.language}}'
           upload: false
       
+      - name: Save CodeQL results
+        run: |
+          mkdir -p codeql-results
+          cp \${{ steps.analyze.outputs.sarif-output }}/*.sarif codeql-results/codeql-\${{ matrix.language }}.sarif
+      
       - name: Upload CodeQL results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: codeql-results-\${{ matrix.language }}
-          path: \${{ steps.analyze.outputs.sarif-output }}/\${{ matrix.language }}.sarif
+          path: codeql-results/codeql-\${{ matrix.language }}.sarif
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
