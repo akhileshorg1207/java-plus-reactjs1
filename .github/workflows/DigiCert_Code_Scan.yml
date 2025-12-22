@@ -48,11 +48,12 @@ jobs:
         with:
           pattern: codeql-sarif-*
           path: ./sarif-results
+          merge-multiple: true
 
       - name: Zip SARIF results
         run: |
           cd sarif-results
-          zip ../codeql-sarif-results.zip *.sarif
+          find . -name "*.sarif" -print | zip ../codeql-sarif-results.zip -@
 
       - name: Upload zipped SARIF results as artifact
         uses: actions/upload-artifact@v4
