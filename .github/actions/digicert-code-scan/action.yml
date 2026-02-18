@@ -45,7 +45,7 @@ inputs:
   sarif-artifact-name:
     description: "Artifact name for SARIF upload"
     required: false
-    default: "codeql-sarif"
+    default: "digicert_scan_results"
 
   upload-sarif-artifact:
     description: "Upload SARIF artifact (true/false)"
