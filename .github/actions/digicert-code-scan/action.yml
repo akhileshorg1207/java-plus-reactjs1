@@ -79,7 +79,7 @@ runs:
             echo "BACKEND_BASE_URL=__PROD_BASE_URL__" >> "$GITHUB_ENV"
             ;;
           stage)
-            echo "BACKEND_BASE_URL=http://host.docker.internal:3000" >> "$GITHUB_ENV"
+            echo "BACKEND_BASE_URL=https://lucila-brashier-paxton.ngrok-free.dev" >> "$GITHUB_ENV"
             ;;
           *)
             echo "Unsupported backend-env: '${{ inputs.backend-env }}' (use prod|stage)" >&2
