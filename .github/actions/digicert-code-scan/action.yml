@@ -52,6 +52,21 @@ inputs:
     required: false
     default: "true"
 
+  post-sarif-to-backend:
+    description: "POST SARIF result to backend API (true/false)"
+    required: false
+    default: "false"
+
+  sarif-post-endpoint:
+    description: "Backend endpoint path for SARIF ingestion (path only, appended to BACKEND_BASE_URL)"
+    required: false
+    default: "/releasemonitor/api/v1/gha/code-analysis/sarif"
+
+  workflow-correlation-id:
+    description: "Optional correlation id to group multi-language SARIF posts under the same workflow run"
+    required: false
+    default: ""
+
   generate-sbom:
     description: "Generate SBOM using Trivy (true/false)"
     required: false
@@ -195,6 +210,106 @@ runs:
       with:
         upload: false
         output: ${{ inputs.sarif-output }}
+
+    - name: Post SARIF to backend
+      if: ${{ inputs.post-sarif-to-backend == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        SARIF_FILE="${{ inputs.sarif-output }}"
+        if [ ! -f "$SARIF_FILE" ]; then
+          echo "SARIF file not found at '$SARIF_FILE'" >&2
+          exit 1
+        fi
+
+        ENDPOINT_PATH="${{ inputs.sarif-post-endpoint }}"
+        if [ -z "$ENDPOINT_PATH" ] || [[ "$ENDPOINT_PATH" != /* ]]; then
+          echo "sarif-post-endpoint must be a non-empty absolute path starting with '/'" >&2
+          exit 1
+        fi
+
+        URL="${BACKEND_BASE_URL}${ENDPOINT_PATH}"
+
+        CORRELATION_ID_INPUT="${{ inputs.workflow-correlation-id }}"
+        if [ -n "$CORRELATION_ID_INPUT" ]; then
+          CORRELATION_ID="$CORRELATION_ID_INPUT"
+        else
+          CORRELATION_ID="gha:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_REPOSITORY}:${GITHUB_SHA}"
+        fi
+
+        REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
+        REF_NAME="${GITHUB_REF_NAME:-}"
+
+        # For best per-language behavior, run this composite action once per language (matrix)
+        # and set inputs.languages to a single language and inputs.sarif-output to a language-specific file.
+        LANGS_RAW="${{ steps.langs.outputs.languages }}"
+        LANGS_CSV="$(echo "$LANGS_RAW" | tr -d ' ' || true)"
+        if [ -z "$LANGS_CSV" ]; then
+          LANGS_CSV="auto"
+        fi
+
+        PAYLOAD="$(jq -n \
+          --slurpfile sarif "$SARIF_FILE" \
+          --arg correlationId "$CORRELATION_ID" \
+          --arg owner "${DC_OWNER}" \
+          --arg repo "${DC_REPO}" \
+          --arg repository "$REPO_FULL_NAME" \
+          --arg ref "${GITHUB_REF:-${DC_REF}}" \
+          --arg refName "$REF_NAME" \
+          --arg sha "${GITHUB_SHA:-}" \
+          --arg workflow "${GITHUB_WORKFLOW:-}" \
+          --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
+          --arg job "${GITHUB_JOB:-}" \
+          --arg runId "${GITHUB_RUN_ID:-}" \
+          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          --arg eventName "${GITHUB_EVENT_NAME:-}" \
+          --arg languages "$LANGS_CSV" \
+          '{
+            correlationId: $correlationId,
+            github: {
+              repository: $repository,
+              owner: $owner,
+              repo: $repo,
+              ref: $ref,
+              refName: $refName,
+              sha: $sha,
+              eventName: $eventName,
+              workflow: $workflow,
+              workflowRef: $workflowRef,
+              job: $job,
+              runId: $runId,
+              runAttempt: $runAttempt
+            },
+            codeql: {
+              languages: ($languages | split(",") | map(select(length > 0)))
+            },
+            sarif: $sarif[0]
+          }')"
+
+        echo "Posting SARIF to: $URL"
+
+        # Post SARIF. We capture the response body for debugging without printing secrets.
+        RAW="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary "$PAYLOAD" \
+          -w $'\n%{http_code}')"
+
+        BODY="${RAW%$'\n'*}"
+        STATUS="${RAW##*$'\n'}"
+
+        if [ -z "$STATUS" ] || ! [[ "$STATUS" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to post SARIF (no HTTP status). Response: $RAW" >&2
+          exit 1
+        fi
+
+        if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
+          echo "Failed to post SARIF (HTTP $STATUS). Response body: $BODY" >&2
+          exit 1
+        fi
+
+        echo "Posted SARIF successfully (HTTP $STATUS)"
 
     - name: Upload SARIF result as artifact
       if: ${{ inputs.upload-sarif-artifact == 'true' }}

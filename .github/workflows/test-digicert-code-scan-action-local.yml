@@ -23,5 +23,6 @@ jobs:
         with:
           backend-env: stage
           backend-api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
+          post-sarif-to-backend: "true"
           owner: akhileshorg1207
           repo: java-plus-reactjs1
