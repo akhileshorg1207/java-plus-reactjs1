@@ -273,7 +273,10 @@ runs:
           SARIF_BASENAME="$(basename "$SARIF_FILE")"
           echo "Posting SARIF file: $SARIF_FILE"
 
-          PAYLOAD="$(jq -n \
+          PAYLOAD_FILE="$(mktemp)"
+          trap 'rm -f "$PAYLOAD_FILE"' EXIT
+
+          jq -n \
             --slurpfile sarif "$SARIF_FILE" \
             --arg correlationId "$CORRELATION_ID" \
             --arg owner "${DC_OWNER}" \
@@ -311,7 +314,7 @@ runs:
               },
               sarifFileName: $sarifFileName,
               sarif: $sarif[0]
-            }')"
+            }' > "$PAYLOAD_FILE"
 
           echo "Posting SARIF to: $URL"
 
@@ -319,7 +322,7 @@ runs:
           RAW="$(curl -sS -X POST "$URL" \
             -H "Content-Type: application/json" \
             -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
-            --data-binary "$PAYLOAD" \
+            --data-binary @"$PAYLOAD_FILE" \
             -w $'\n%{http_code}')"
 
           BODY="${RAW%$'\n'*}"
@@ -336,6 +339,9 @@ runs:
           fi
 
           echo "Posted SARIF '$SARIF_BASENAME' successfully (HTTP $STATUS)"
+
+          rm -f "$PAYLOAD_FILE"
+          trap - EXIT
         done
 
     - name: Upload SARIF result as artifact
