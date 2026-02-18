@@ -217,9 +217,27 @@ runs:
       run: |
         set -euo pipefail
 
-        SARIF_FILE="${{ inputs.sarif-output }}"
-        if [ ! -f "$SARIF_FILE" ]; then
-          echo "SARIF file not found at '$SARIF_FILE'" >&2
+        SARIF_PATH="${{ inputs.sarif-output }}"
+        SARIF_FILES=()
+
+        if [ -f "$SARIF_PATH" ]; then
+          SARIF_FILES+=("$SARIF_PATH")
+        elif [ -d "$SARIF_PATH" ]; then
+          while IFS= read -r f; do
+            SARIF_FILES+=("$f")
+          done < <(find "$SARIF_PATH" -type f -name "*.sarif" | sort)
+        else
+          # Fallback: locate SARIF files in workspace (CodeQL may write to a different path)
+          while IFS= read -r f; do
+            SARIF_FILES+=("$f")
+          done < <(find . -type f -name "*.sarif" \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            | sort)
+        fi
+
+        if [ "${#SARIF_FILES[@]}" -eq 0 ]; then
+          echo "No SARIF files found. Expected at '${SARIF_PATH}' (file or directory)." >&2
           exit 1
         fi
 
@@ -249,67 +267,76 @@ runs:
           LANGS_CSV="auto"
         fi
 
-        PAYLOAD="$(jq -n \
-          --slurpfile sarif "$SARIF_FILE" \
-          --arg correlationId "$CORRELATION_ID" \
-          --arg owner "${DC_OWNER}" \
-          --arg repo "${DC_REPO}" \
-          --arg repository "$REPO_FULL_NAME" \
-          --arg ref "${GITHUB_REF:-${DC_REF}}" \
-          --arg refName "$REF_NAME" \
-          --arg sha "${GITHUB_SHA:-}" \
-          --arg workflow "${GITHUB_WORKFLOW:-}" \
-          --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
-          --arg job "${GITHUB_JOB:-}" \
-          --arg runId "${GITHUB_RUN_ID:-}" \
-          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
-          --arg eventName "${GITHUB_EVENT_NAME:-}" \
-          --arg languages "$LANGS_CSV" \
-          '{
-            correlationId: $correlationId,
-            github: {
-              repository: $repository,
-              owner: $owner,
-              repo: $repo,
-              ref: $ref,
-              refName: $refName,
-              sha: $sha,
-              eventName: $eventName,
-              workflow: $workflow,
-              workflowRef: $workflowRef,
-              job: $job,
-              runId: $runId,
-              runAttempt: $runAttempt
-            },
-            codeql: {
-              languages: ($languages | split(",") | map(select(length > 0)))
-            },
-            sarif: $sarif[0]
-          }')"
+        echo "Found ${#SARIF_FILES[@]} SARIF file(s) to post."
 
-        echo "Posting SARIF to: $URL"
+        for SARIF_FILE in "${SARIF_FILES[@]}"; do
+          SARIF_BASENAME="$(basename "$SARIF_FILE")"
+          echo "Posting SARIF file: $SARIF_FILE"
 
-        # Post SARIF. We capture the response body for debugging without printing secrets.
-        RAW="$(curl -sS -X POST "$URL" \
-          -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
-          --data-binary "$PAYLOAD" \
-          -w $'\n%{http_code}')"
+          PAYLOAD="$(jq -n \
+            --slurpfile sarif "$SARIF_FILE" \
+            --arg correlationId "$CORRELATION_ID" \
+            --arg owner "${DC_OWNER}" \
+            --arg repo "${DC_REPO}" \
+            --arg repository "$REPO_FULL_NAME" \
+            --arg ref "${GITHUB_REF:-${DC_REF}}" \
+            --arg refName "$REF_NAME" \
+            --arg sha "${GITHUB_SHA:-}" \
+            --arg workflow "${GITHUB_WORKFLOW:-}" \
+            --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
+            --arg job "${GITHUB_JOB:-}" \
+            --arg runId "${GITHUB_RUN_ID:-}" \
+            --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+            --arg eventName "${GITHUB_EVENT_NAME:-}" \
+            --arg languages "$LANGS_CSV" \
+            --arg sarifFileName "$SARIF_BASENAME" \
+            '{
+              correlationId: $correlationId,
+              github: {
+                repository: $repository,
+                owner: $owner,
+                repo: $repo,
+                ref: $ref,
+                refName: $refName,
+                sha: $sha,
+                eventName: $eventName,
+                workflow: $workflow,
+                workflowRef: $workflowRef,
+                job: $job,
+                runId: $runId,
+                runAttempt: $runAttempt
+              },
+              codeql: {
+                languages: ($languages | split(",") | map(select(length > 0)))
+              },
+              sarifFileName: $sarifFileName,
+              sarif: $sarif[0]
+            }')"
 
-        BODY="${RAW%$'\n'*}"
-        STATUS="${RAW##*$'\n'}"
+          echo "Posting SARIF to: $URL"
 
-        if [ -z "$STATUS" ] || ! [[ "$STATUS" =~ ^[0-9][0-9][0-9]$ ]]; then
-          echo "Failed to post SARIF (no HTTP status). Response: $RAW" >&2
-          exit 1
-        fi
+          # Post SARIF. We capture the response body for debugging without printing secrets.
+          RAW="$(curl -sS -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+            --data-binary "$PAYLOAD" \
+            -w $'\n%{http_code}')"
 
-        if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
-          echo "Failed to post SARIF (HTTP $STATUS). Response body: $BODY" >&2
-          exit 1
-        fi
+          BODY="${RAW%$'\n'*}"
+          STATUS="${RAW##*$'\n'}"
 
-        echo "Posted SARIF successfully (HTTP $STATUS)"
+          if [ -z "$STATUS" ] || ! [[ "$STATUS" =~ ^[0-9][0-9][0-9]$ ]]; then
+            echo "Failed to post SARIF (no HTTP status). Response: $RAW" >&2
+            exit 1
+          fi
+
+          if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
+            echo "Failed to post SARIF for '$SARIF_BASENAME' (HTTP $STATUS). Response body: $BODY" >&2
+            exit 1
+          fi
+
+          echo "Posted SARIF '$SARIF_BASENAME' successfully (HTTP $STATUS)"
+        done
 
     - name: Upload SARIF result as artifact
       if: ${{ inputs.upload-sarif-artifact == 'true' }}
