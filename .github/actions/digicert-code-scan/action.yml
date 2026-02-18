@@ -67,6 +67,11 @@ inputs:
     required: false
     default: ""
 
+  sarif-post-mode:
+    description: "How to POST SARIF when multiple files exist: 'merged' (single call) or 'per-file' (one call per SARIF file)"
+    required: false
+    default: "merged"
+
   generate-sbom:
     description: "Generate SBOM using Trivy (true/false)"
     required: false
@@ -241,6 +246,13 @@ runs:
           exit 1
         fi
 
+        POST_MODE_RAW="${{ inputs.sarif-post-mode }}"
+        POST_MODE="$(echo "$POST_MODE_RAW" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+        if [ "$POST_MODE" != "merged" ] && [ "$POST_MODE" != "per-file" ]; then
+          echo "Invalid sarif-post-mode: '$POST_MODE_RAW' (use 'merged' or 'per-file')" >&2
+          exit 1
+        fi
+
         ENDPOINT_PATH="${{ inputs.sarif-post-endpoint }}"
         if [ -z "$ENDPOINT_PATH" ] || [[ "$ENDPOINT_PATH" != /* ]]; then
           echo "sarif-post-endpoint must be a non-empty absolute path starting with '/'" >&2
@@ -267,17 +279,17 @@ runs:
           LANGS_CSV="auto"
         fi
 
-        echo "Found ${#SARIF_FILES[@]} SARIF file(s) to post."
+        echo "Found ${#SARIF_FILES[@]} SARIF file(s). Post mode: $POST_MODE"
 
-        for SARIF_FILE in "${SARIF_FILES[@]}"; do
-          SARIF_BASENAME="$(basename "$SARIF_FILE")"
-          echo "Posting SARIF file: $SARIF_FILE"
+        post_one() {
+          local sarif_file="$1"
+          local sarif_file_name="$2"
 
-          PAYLOAD_FILE="$(mktemp)"
-          trap 'rm -f "$PAYLOAD_FILE"' EXIT
+          local payload_file
+          payload_file="$(mktemp)"
 
           jq -n \
-            --slurpfile sarif "$SARIF_FILE" \
+            --slurpfile sarif "$sarif_file" \
             --arg correlationId "$CORRELATION_ID" \
             --arg owner "${DC_OWNER}" \
             --arg repo "${DC_REPO}" \
@@ -292,7 +304,7 @@ runs:
             --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
             --arg eventName "${GITHUB_EVENT_NAME:-}" \
             --arg languages "$LANGS_CSV" \
-            --arg sarifFileName "$SARIF_BASENAME" \
+            --arg sarifFileName "$sarif_file_name" \
             '{
               correlationId: $correlationId,
               github: {
@@ -314,35 +326,55 @@ runs:
               },
               sarifFileName: $sarifFileName,
               sarif: $sarif[0]
-            }' > "$PAYLOAD_FILE"
+            }' > "$payload_file"
 
           echo "Posting SARIF to: $URL"
 
-          # Post SARIF. We capture the response body for debugging without printing secrets.
-          RAW="$(curl -sS -X POST "$URL" \
+          local raw body status
+          raw="$(curl -sS -X POST "$URL" \
             -H "Content-Type: application/json" \
             -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
-            --data-binary @"$PAYLOAD_FILE" \
+            --data-binary @"$payload_file" \
             -w $'\n%{http_code}')"
 
-          BODY="${RAW%$'\n'*}"
-          STATUS="${RAW##*$'\n'}"
+          rm -f "$payload_file"
 
-          if [ -z "$STATUS" ] || ! [[ "$STATUS" =~ ^[0-9][0-9][0-9]$ ]]; then
-            echo "Failed to post SARIF (no HTTP status). Response: $RAW" >&2
+          body="${raw%$'\n'*}"
+          status="${raw##*$'\n'}"
+
+          if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+            echo "Failed to post SARIF (no HTTP status). Response: $raw" >&2
             exit 1
           fi
 
-          if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
-            echo "Failed to post SARIF for '$SARIF_BASENAME' (HTTP $STATUS). Response body: $BODY" >&2
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Failed to post SARIF for '$sarif_file_name' (HTTP $status). Response body: $body" >&2
             exit 1
           fi
 
-          echo "Posted SARIF '$SARIF_BASENAME' successfully (HTTP $STATUS)"
+          echo "Posted SARIF '$sarif_file_name' successfully (HTTP $status)"
+        }
 
-          rm -f "$PAYLOAD_FILE"
-          trap - EXIT
-        done
+        if [ "$POST_MODE" = "merged" ]; then
+          MERGED_SARIF_FILE="$(mktemp)"
+          # Merge SARIF files by concatenating runs; keep top-level fields from the first file.
+          jq -s '
+            def safeRuns: (.runs // []);
+            (.[0] // {}) as $base
+            | ($base | del(.runs))
+            + { runs: ([ .[] | safeRuns[] ] ) }
+          ' "${SARIF_FILES[@]}" > "$MERGED_SARIF_FILE"
+
+          echo "Posting merged SARIF (runs from ${#SARIF_FILES[@]} file(s))"
+          post_one "$MERGED_SARIF_FILE" "merged.sarif"
+          rm -f "$MERGED_SARIF_FILE"
+        else
+          for SARIF_FILE in "${SARIF_FILES[@]}"; do
+            SARIF_BASENAME="$(basename "$SARIF_FILE")"
+            echo "Posting SARIF file: $SARIF_FILE"
+            post_one "$SARIF_FILE" "$SARIF_BASENAME"
+          done
+        fi
 
     - name: Upload SARIF result as artifact
       if: ${{ inputs.upload-sarif-artifact == 'true' }}
