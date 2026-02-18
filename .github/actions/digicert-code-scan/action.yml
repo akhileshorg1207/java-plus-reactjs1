@@ -1,0 +1,219 @@
+name: "DigiCert Scan (CodeQL + SBOM)"
+description: "Runs CodeQL multi-language scan (languages auto from backend) and generates SBOM. Uploads artifacts for backend ingestion."
+author: "DigiCert"
+
+inputs:
+  backend-env:
+    description: "Backend environment to use (prod|stage)"
+    required: false
+    default: "prod"
+
+  backend-api-key:
+    description: "API key for DigiCert backend (pass via secrets)"
+    required: true
+
+  owner:
+    description: "Repo owner/org. Default: github.repository_owner"
+    required: false
+    default: ""
+
+  repo:
+    description: "Repo name (without owner). Default: parsed from github.repository"
+    required: false
+    default: ""
+
+  ref:
+    description: "Git ref to resolve languages for (optional)."
+    required: false
+    default: ""
+
+  languages:
+    description: "Comma-separated CodeQL languages, or 'auto' to fetch from backend"
+    required: false
+    default: "auto"
+
+  build-mode:
+    description: "CodeQL build-mode (none, autobuild, manual)"
+    required: false
+    default: "none"
+
+  sarif-output:
+    description: "SARIF output file path"
+    required: false
+    default: "codeql.sarif"
+
+  sarif-artifact-name:
+    description: "Artifact name for SARIF upload"
+    required: false
+    default: "codeql-sarif"
+
+  upload-sarif-artifact:
+    description: "Upload SARIF artifact (true/false)"
+    required: false
+    default: "true"
+
+  generate-sbom:
+    description: "Generate SBOM using Trivy (true/false)"
+    required: false
+    default: "true"
+
+  sbom-output:
+    description: "SBOM output file path (CycloneDX JSON)"
+    required: false
+    default: "sbom.cyclonedx.json"
+
+  sbom-artifact-name:
+    description: "Artifact name for SBOM upload"
+    required: false
+    default: "sbom-cyclonedx"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve backend base URL
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ inputs.backend-env }}" in
+          prod)
+            echo "BACKEND_BASE_URL=__PROD_BASE_URL__" >> "$GITHUB_ENV"
+            ;;
+          stage)
+            echo "BACKEND_BASE_URL=http://host.docker.internal:3000" >> "$GITHUB_ENV"
+            ;;
+          *)
+            echo "Unsupported backend-env: '${{ inputs.backend-env }}' (use prod|stage)" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Resolve repo context (owner/repo/ref)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        OWNER_INPUT="${{ inputs.owner }}"
+        REPO_INPUT="${{ inputs.repo }}"
+        REF_INPUT="${{ inputs.ref }}"
+
+        if [ -z "$OWNER_INPUT" ]; then
+          OWNER_INPUT="${GITHUB_REPOSITORY_OWNER:-}"
+        fi
+
+        if [ -z "$REPO_INPUT" ]; then
+          # GITHUB_REPOSITORY = owner/repo
+          REPO_INPUT="${GITHUB_REPOSITORY#*/}"
+        fi
+
+        if [ -z "$OWNER_INPUT" ] || [ -z "$REPO_INPUT" ] || [ "$REPO_INPUT" = "$GITHUB_REPOSITORY" ]; then
+          echo "Could not resolve owner/repo from GitHub context. Pass inputs.owner and inputs.repo explicitly." >&2
+          exit 1
+        fi
+
+        if [ -z "$REF_INPUT" ]; then
+          REF_INPUT="${GITHUB_REF}"
+        fi
+
+        echo "DC_OWNER=$OWNER_INPUT" >> "$GITHUB_ENV"
+        echo "DC_REPO=$REPO_INPUT" >> "$GITHUB_ENV"
+        echo "DC_REF=$REF_INPUT" >> "$GITHUB_ENV"
+
+    - name: Resolve CodeQL languages
+      id: langs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${{ inputs.languages }}" != "auto" ]; then
+          # normalize commas/spaces
+          LANGS="$(echo "${{ inputs.languages }}" | tr -d ' ' )"
+          echo "LANGS=$LANGS" >> "$GITHUB_ENV"
+          echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/languages"
+        echo "Fetching languages from: $URL"
+
+        # Requires jq on runner (ubuntu has it)
+        # Capture body + status code to handle API errors gracefully.
+        if [ -n "${DC_REF}" ]; then
+          RAW="$(curl -sS -G "$URL" \
+            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+            --data-urlencode "repo=${DC_REPO}" \
+            --data-urlencode "ref=${DC_REF}" \
+            -w $'\n%{http_code}')"
+        else
+          RAW="$(curl -sS -G "$URL" \
+            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+            --data-urlencode "repo=${DC_REPO}" \
+            -w $'\n%{http_code}')"
+        fi
+
+        BODY="${RAW%$'\n'*}"
+        STATUS="${RAW##*$'\n'}"
+
+        if [ -z "$STATUS" ] || ! [[ "$STATUS" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to call backend (no HTTP status). Response: $RAW" >&2
+          exit 1
+        fi
+
+        if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
+          ERR_MSG="$(echo "$BODY" | jq -r '.error.message? // .error? // .message? // empty' 2>/dev/null || true)"
+          if [ -z "$ERR_MSG" ]; then
+            ERR_MSG="Backend returned HTTP $STATUS"
+          fi
+          echo "Failed to fetch languages: $ERR_MSG" >&2
+          echo "Backend response body: $BODY" >&2
+          exit 1
+        fi
+
+        echo "Backend response: $BODY"
+
+        LANGS="$(echo "$BODY" | jq -e -r '.languages | select(type=="array") | join(",")' 2>/dev/null || true)"
+
+        if [ -z "$LANGS" ] || [ "$LANGS" = "null" ]; then
+          echo "No languages returned by backend." >&2
+          echo "Backend response body: $BODY" >&2
+          exit 1
+        fi
+
+        echo "LANGS=$LANGS" >> "$GITHUB_ENV"
+        echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ steps.langs.outputs.languages }}
+        build-mode: ${{ inputs.build-mode }}
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        upload: false
+        output: ${{ inputs.sarif-output }}
+
+    - name: Upload SARIF result as artifact
+      if: ${{ inputs.upload-sarif-artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.sarif-artifact-name }}
+        path: ${{ inputs.sarif-output }}
+
+    - name: Generate SBOM (Trivy CycloneDX)
+      if: ${{ inputs.generate-sbom == 'true' }}
+      uses: aquasecurity/trivy-action@0.33.1
+      with:
+        scan-type: "fs"
+        format: "cyclonedx"
+        output: ${{ inputs.sbom-output }}
+
+    - name: Upload SBOM as artifact
+      if: ${{ inputs.generate-sbom == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.sbom-artifact-name }}
+        path: ${{ inputs.sbom-output }}
