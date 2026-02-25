@@ -67,6 +67,11 @@ inputs:
     required: false
     default: ""
 
+  scan-name:
+    description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (scanName + branch + commitSha). When set, the action may skip if a scan already completed."
+    required: false
+    default: ""
+
   sarif-post-mode:
     description: "How to POST SARIF when multiple files exist: 'merged' (single call) or 'per-file' (one call per SARIF file)"
     required: false
@@ -141,9 +146,161 @@ runs:
         echo "DC_REPO=$REPO_INPUT" >> "$GITHUB_ENV"
         echo "DC_REF=$REF_INPUT" >> "$GITHUB_ENV"
 
+        # Default: run the scan unless backend prepare says otherwise.
+        echo "DC_SHOULD_RUN=true" >> "$GITHUB_ENV"
+
+    - name: Prepare Code Analysis Scan (scan-name)
+      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.scan-name != '' }}
+      id: cas_prepare
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans/prepare"
+        echo "Preparing CAS at: $URL"
+
+        REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
+        REF_NAME="${GITHUB_REF_NAME:-}"
+
+        payload_file="$(mktemp)"
+        jq -n \
+          --arg scanName "${{ inputs.scan-name }}" \
+          --arg repository "$REPO_FULL_NAME" \
+          --arg owner "${DC_OWNER}" \
+          --arg repo "${DC_REPO}" \
+          --arg ref "${GITHUB_REF:-${DC_REF}}" \
+          --arg refName "$REF_NAME" \
+          --arg sha "${GITHUB_SHA:-}" \
+          --arg runId "${GITHUB_RUN_ID:-}" \
+          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          ' {
+              scanName: $scanName,
+              github: {
+                repository: $repository,
+                owner: $owner,
+                repo: $repo,
+                ref: $ref,
+                refName: $refName,
+                sha: $sha,
+                runId: $runId,
+                runAttempt: $runAttempt
+              }
+            } ' > "$payload_file"
+
+        raw="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary @"$payload_file" \
+          -w $'\n%{http_code}')"
+
+        rm -f "$payload_file"
+
+        body="${raw%$'\n'*}"
+        status="${raw##*$'\n'}"
+
+        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to prepare CAS (no HTTP status). Response: $raw" >&2
+          exit 1
+        fi
+
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "Failed to prepare CAS (HTTP $status). Response body: $body" >&2
+          exit 1
+        fi
+
+        CAS_ID="$(echo "$body" | jq -r '.id // empty')"
+        SHOULD_RUN="$(echo "$body" | jq -r '.shouldRun // empty')"
+
+        if [ -z "$CAS_ID" ]; then
+          echo "Backend did not return CAS id. Response body: $body" >&2
+          exit 1
+        fi
+
+        if [ -z "$SHOULD_RUN" ]; then
+          echo "Backend did not return shouldRun. Response body: $body" >&2
+          exit 1
+        fi
+
+        echo "DC_CAS_ID=$CAS_ID" >> "$GITHUB_ENV"
+        echo "DC_SHOULD_RUN=$SHOULD_RUN" >> "$GITHUB_ENV"
+
+        echo "id=$CAS_ID" >> "$GITHUB_OUTPUT"
+        echo "shouldRun=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+
+        if [ "$SHOULD_RUN" != "true" ]; then
+          echo "Scan already completed or in progress; skipping (shouldRun=$SHOULD_RUN)."
+        fi
+
+    - name: Create Code Analysis Scan (CAS) on backend
+      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.scan-name == '' }}
+      id: cas
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans"
+        echo "Creating CAS at: $URL"
+
+        REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
+        REF_NAME="${GITHUB_REF_NAME:-}"
+
+        payload_file="$(mktemp)"
+        jq -n \
+          --arg repository "$REPO_FULL_NAME" \
+          --arg owner "${DC_OWNER}" \
+          --arg repo "${DC_REPO}" \
+          --arg ref "${GITHUB_REF:-${DC_REF}}" \
+          --arg refName "$REF_NAME" \
+          --arg sha "${GITHUB_SHA:-}" \
+          --arg runId "${GITHUB_RUN_ID:-}" \
+          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          ' {
+              github: {
+                repository: $repository,
+                owner: $owner,
+                repo: $repo,
+                ref: $ref,
+                refName: $refName,
+                sha: $sha,
+                runId: $runId,
+                runAttempt: $runAttempt
+              }
+            } ' > "$payload_file"
+
+        raw="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary @"$payload_file" \
+          -w $'\n%{http_code}')"
+
+        rm -f "$payload_file"
+
+        body="${raw%$'\n'*}"
+        status="${raw##*$'\n'}"
+
+        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to create CAS (no HTTP status). Response: $raw" >&2
+          exit 1
+        fi
+
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "Failed to create CAS (HTTP $status). Response body: $body" >&2
+          exit 1
+        fi
+
+        CAS_ID="$(echo "$body" | jq -r '.id // empty')"
+        if [ -z "$CAS_ID" ]; then
+          echo "Backend did not return CAS id. Response body: $body" >&2
+          exit 1
+        fi
+
+        echo "DC_CAS_ID=$CAS_ID" >> "$GITHUB_ENV"
+        echo "id=$CAS_ID" >> "$GITHUB_OUTPUT"
+
     - name: Resolve CodeQL languages
       id: langs
       shell: bash
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       run: |
         set -euo pipefail
 
@@ -205,19 +362,21 @@ runs:
         echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
 
     - name: Initialize CodeQL
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       uses: github/codeql-action/init@v3
       with:
         languages: ${{ steps.langs.outputs.languages }}
         build-mode: ${{ inputs.build-mode }}
 
     - name: Perform CodeQL Analysis
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       uses: github/codeql-action/analyze@v3
       with:
         upload: false
         output: ${{ inputs.sarif-output }}
 
     - name: Post SARIF to backend
-      if: ${{ inputs.post-sarif-to-backend == 'true' }}
+      if: ${{ inputs.post-sarif-to-backend == 'true' && env.DC_SHOULD_RUN == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -264,6 +423,8 @@ runs:
         CORRELATION_ID_INPUT="${{ inputs.workflow-correlation-id }}"
         if [ -n "$CORRELATION_ID_INPUT" ]; then
           CORRELATION_ID="$CORRELATION_ID_INPUT"
+        elif [ -n "${DC_CAS_ID:-}" ]; then
+          CORRELATION_ID="$DC_CAS_ID"
         else
           CORRELATION_ID="gha:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_REPOSITORY}:${GITHUB_SHA}"
         fi
@@ -376,15 +537,67 @@ runs:
           done
         fi
 
+    - name: Finalize CAS on backend
+      if: ${{ always() && inputs.post-sarif-to-backend == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -z "${DC_CAS_ID:-}" ]; then
+          echo "No DC_CAS_ID set; skipping finalize."
+          exit 0
+        fi
+
+        JOB_STATUS="${{ job.status }}"
+        if [ "$JOB_STATUS" = "success" ]; then
+          FINAL_STATUS="COMPLETED"
+        else
+          FINAL_STATUS="FAILED"
+        fi
+
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans/${DC_CAS_ID}/finalize"
+        echo "Finalizing CAS ${DC_CAS_ID} at: $URL (status=${FINAL_STATUS}, job.status=${JOB_STATUS})"
+
+        payload_file="$(mktemp)"
+        jq -n \
+          --arg status "$FINAL_STATUS" \
+          --arg message "Composite action finalized with job.status=${JOB_STATUS}" \
+          --arg failureStage "composite" \
+          '{ status: $status, message: $message, failureStage: $failureStage }' > "$payload_file"
+
+        raw="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary @"$payload_file" \
+          -w $'\n%{http_code}')"
+
+        rm -f "$payload_file"
+
+        body="${raw%$'\n'*}"
+        status="${raw##*$'\n'}"
+
+        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Finalize CAS failed (no HTTP status). Response: $raw" >&2
+          exit 0
+        fi
+
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "Finalize CAS failed (HTTP $status). Response body: $body" >&2
+          exit 0
+        fi
+
+        echo "Finalize CAS succeeded (HTTP $status)"
+
     - name: Upload SARIF result as artifact
-      if: ${{ inputs.upload-sarif-artifact == 'true' }}
+      if: ${{ inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.sarif-artifact-name }}
         path: ${{ inputs.sarif-output }}
 
     - name: Generate SBOM (Trivy CycloneDX)
-      if: ${{ inputs.generate-sbom == 'true' }}
+      if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
       uses: aquasecurity/trivy-action@0.33.1
       with:
         scan-type: "fs"
@@ -392,7 +605,7 @@ runs:
         output: ${{ inputs.sbom-output }}
 
     - name: Upload SBOM as artifact
-      if: ${{ inputs.generate-sbom == 'true' }}
+      if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.sbom-artifact-name }}

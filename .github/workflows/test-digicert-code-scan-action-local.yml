@@ -26,3 +26,4 @@ jobs:
           post-sarif-to-backend: "true"
           owner: akhileshorg1207
           repo: java-plus-reactjs1
+          scan-name: "Test Scan from action"
