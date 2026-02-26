@@ -375,40 +375,25 @@ runs:
         upload: false
         output: ${{ inputs.sarif-output }}
 
+    - name: Upload SARIF result as artifact
+      if: ${{ inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      id: upload_sarif
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.sarif-artifact-name }}
+        path: ${{ inputs.sarif-output }}
+
     - name: Post SARIF to backend
-      if: ${{ inputs.post-sarif-to-backend == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
 
-        SARIF_PATH="${{ inputs.sarif-output }}"
-        SARIF_FILES=()
+        ARTIFACT_ID="${{ steps.upload_sarif.outputs.artifact-id }}"
+        ARTIFACT_NAME="${{ inputs.sarif-artifact-name }}"
 
-        if [ -f "$SARIF_PATH" ]; then
-          SARIF_FILES+=("$SARIF_PATH")
-        elif [ -d "$SARIF_PATH" ]; then
-          while IFS= read -r f; do
-            SARIF_FILES+=("$f")
-          done < <(find "$SARIF_PATH" -type f -name "*.sarif" | sort)
-        else
-          # Fallback: locate SARIF files in workspace (CodeQL may write to a different path)
-          while IFS= read -r f; do
-            SARIF_FILES+=("$f")
-          done < <(find . -type f -name "*.sarif" \
-            -not -path "./.git/*" \
-            -not -path "./node_modules/*" \
-            | sort)
-        fi
-
-        if [ "${#SARIF_FILES[@]}" -eq 0 ]; then
-          echo "No SARIF files found. Expected at '${SARIF_PATH}' (file or directory)." >&2
-          exit 1
-        fi
-
-        POST_MODE_RAW="${{ inputs.sarif-post-mode }}"
-        POST_MODE="$(echo "$POST_MODE_RAW" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
-        if [ "$POST_MODE" != "merged" ] && [ "$POST_MODE" != "per-file" ]; then
-          echo "Invalid sarif-post-mode: '$POST_MODE_RAW' (use 'merged' or 'per-file')" >&2
+        if [ -z "$ARTIFACT_ID" ]; then
+          echo "Missing artifact-id from upload-artifact step; cannot trigger backend SARIF processing." >&2
           exit 1
         fi
 
@@ -440,102 +425,72 @@ runs:
           LANGS_CSV="auto"
         fi
 
-        echo "Found ${#SARIF_FILES[@]} SARIF file(s). Post mode: $POST_MODE"
+        payload_file="$(mktemp)"
+        jq -n \
+          --arg correlationId "$CORRELATION_ID" \
+          --arg artifactId "$ARTIFACT_ID" \
+          --arg artifactName "$ARTIFACT_NAME" \
+          --arg owner "${DC_OWNER}" \
+          --arg repo "${DC_REPO}" \
+          --arg repository "$REPO_FULL_NAME" \
+          --arg ref "${GITHUB_REF:-${DC_REF}}" \
+          --arg refName "$REF_NAME" \
+          --arg sha "${GITHUB_SHA:-}" \
+          --arg workflow "${GITHUB_WORKFLOW:-}" \
+          --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
+          --arg job "${GITHUB_JOB:-}" \
+          --arg runId "${GITHUB_RUN_ID:-}" \
+          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          --arg eventName "${GITHUB_EVENT_NAME:-}" \
+          --arg languages "$LANGS_CSV" \
+          '{
+            correlationId: $correlationId,
+            artifactId: $artifactId,
+            artifactName: $artifactName,
+            github: {
+              repository: $repository,
+              owner: $owner,
+              repo: $repo,
+              ref: $ref,
+              refName: $refName,
+              sha: $sha,
+              eventName: $eventName,
+              workflow: $workflow,
+              workflowRef: $workflowRef,
+              job: $job,
+              runId: $runId,
+              runAttempt: $runAttempt
+            },
+            codeql: {
+              languages: ($languages | split(",") | map(select(length > 0)))
+            },
+            sarifFileName: "artifact.zip"
+          }' > "$payload_file"
 
-        post_one() {
-          local sarif_file="$1"
-          local sarif_file_name="$2"
+        echo "Triggering backend SARIF processing at: $URL (artifactId=$ARTIFACT_ID, artifactName=$ARTIFACT_NAME)"
 
-          local payload_file
-          payload_file="$(mktemp)"
+        raw="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary @"$payload_file" \
+          -w $'\n%{http_code}')"
 
-          jq -n \
-            --slurpfile sarif "$sarif_file" \
-            --arg correlationId "$CORRELATION_ID" \
-            --arg owner "${DC_OWNER}" \
-            --arg repo "${DC_REPO}" \
-            --arg repository "$REPO_FULL_NAME" \
-            --arg ref "${GITHUB_REF:-${DC_REF}}" \
-            --arg refName "$REF_NAME" \
-            --arg sha "${GITHUB_SHA:-}" \
-            --arg workflow "${GITHUB_WORKFLOW:-}" \
-            --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
-            --arg job "${GITHUB_JOB:-}" \
-            --arg runId "${GITHUB_RUN_ID:-}" \
-            --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
-            --arg eventName "${GITHUB_EVENT_NAME:-}" \
-            --arg languages "$LANGS_CSV" \
-            --arg sarifFileName "$sarif_file_name" \
-            '{
-              correlationId: $correlationId,
-              github: {
-                repository: $repository,
-                owner: $owner,
-                repo: $repo,
-                ref: $ref,
-                refName: $refName,
-                sha: $sha,
-                eventName: $eventName,
-                workflow: $workflow,
-                workflowRef: $workflowRef,
-                job: $job,
-                runId: $runId,
-                runAttempt: $runAttempt
-              },
-              codeql: {
-                languages: ($languages | split(",") | map(select(length > 0)))
-              },
-              sarifFileName: $sarifFileName,
-              sarif: $sarif[0]
-            }' > "$payload_file"
+        rm -f "$payload_file"
 
-          echo "Posting SARIF to: $URL"
+        body="${raw%$'\n'*}"
+        status="${raw##*$'\n'}"
 
-          local raw body status
-          raw="$(curl -sS -X POST "$URL" \
-            -H "Content-Type: application/json" \
-            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
-            --data-binary @"$payload_file" \
-            -w $'\n%{http_code}')"
-
-          rm -f "$payload_file"
-
-          body="${raw%$'\n'*}"
-          status="${raw##*$'\n'}"
-
-          if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
-            echo "Failed to post SARIF (no HTTP status). Response: $raw" >&2
-            exit 1
-          fi
-
-          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-            echo "Failed to post SARIF for '$sarif_file_name' (HTTP $status). Response body: $body" >&2
-            exit 1
-          fi
-
-          echo "Posted SARIF '$sarif_file_name' successfully (HTTP $status)"
-        }
-
-        if [ "$POST_MODE" = "merged" ]; then
-          MERGED_SARIF_FILE="$(mktemp)"
-          # Merge SARIF files by concatenating runs; keep top-level fields from the first file.
-          jq -s '
-            def safeRuns: (.runs // []);
-            (.[0] // {}) as $base
-            | ($base | del(.runs))
-            + { runs: ([ .[] | safeRuns[] ] ) }
-          ' "${SARIF_FILES[@]}" > "$MERGED_SARIF_FILE"
-
-          echo "Posting merged SARIF (runs from ${#SARIF_FILES[@]} file(s))"
-          post_one "$MERGED_SARIF_FILE" "merged.sarif"
-          rm -f "$MERGED_SARIF_FILE"
-        else
-          for SARIF_FILE in "${SARIF_FILES[@]}"; do
-            SARIF_BASENAME="$(basename "$SARIF_FILE")"
-            echo "Posting SARIF file: $SARIF_FILE"
-            post_one "$SARIF_FILE" "$SARIF_BASENAME"
-          done
+        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to trigger SARIF processing (no HTTP status). Response: $raw" >&2
+          exit 1
         fi
+
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "Failed to trigger SARIF processing (HTTP $status). Response body: $body" >&2
+          exit 1
+        fi
+
+        echo "Backend SARIF processing triggered successfully (HTTP $status)"
 
     - name: Finalize CAS on backend
       if: ${{ always() && inputs.post-sarif-to-backend == 'true' && env.DC_SHOULD_RUN == 'true' }}
@@ -588,13 +543,6 @@ runs:
         fi
 
         echo "Finalize CAS succeeded (HTTP $status)"
-
-    - name: Upload SARIF result as artifact
-      if: ${{ inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.sarif-artifact-name }}
-        path: ${{ inputs.sarif-output }}
 
     - name: Generate SBOM (Trivy CycloneDX)
       if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
