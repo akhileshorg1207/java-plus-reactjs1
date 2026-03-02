@@ -92,6 +92,11 @@ inputs:
     required: false
     default: "sbom-cyclonedx"
 
+  sbom-post-endpoint:
+    description: "Backend endpoint path for SBOM ingestion (path only, appended to BACKEND_BASE_URL)"
+    required: false
+    default: "/releasemonitor/api/v1/gha/code-analysis/sbom"
+
 runs:
   using: "composite"
   steps:
@@ -554,7 +559,109 @@ runs:
 
     - name: Upload SBOM as artifact
       if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      id: upload_sbom
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.sbom-artifact-name }}
         path: ${{ inputs.sbom-output }}
+
+    - name: Post SBOM to backend
+      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -z "${DC_CAS_ID:-}" ]; then
+          echo "No DC_CAS_ID set; cannot correlate SBOM to a scan. Enable scan-name flow or ensure CAS creation runs." >&2
+          exit 1
+        fi
+
+        ARTIFACT_ID="${{ steps.upload_sbom.outputs.artifact-id }}"
+        ARTIFACT_NAME="${{ inputs.sbom-artifact-name }}"
+
+        if [ -z "$ARTIFACT_ID" ]; then
+          echo "Missing artifact-id from upload-artifact step; cannot trigger backend SBOM processing." >&2
+          exit 1
+        fi
+
+        ENDPOINT_PATH="${{ inputs.sbom-post-endpoint }}"
+        if [ -z "$ENDPOINT_PATH" ] || [[ "$ENDPOINT_PATH" != /* ]]; then
+          echo "sbom-post-endpoint must be a non-empty absolute path starting with '/'" >&2
+          exit 1
+        fi
+
+        URL="${BACKEND_BASE_URL}${ENDPOINT_PATH}"
+
+        CORRELATION_ID_INPUT="${{ inputs.workflow-correlation-id }}"
+        if [ -n "$CORRELATION_ID_INPUT" ]; then
+          CORRELATION_ID="$CORRELATION_ID_INPUT"
+        else
+          CORRELATION_ID="$DC_CAS_ID"
+        fi
+
+        REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
+        REF_NAME="${GITHUB_REF_NAME:-}"
+
+        payload_file="$(mktemp)"
+        jq -n \
+          --arg correlationId "$CORRELATION_ID" \
+          --arg artifactId "$ARTIFACT_ID" \
+          --arg artifactName "$ARTIFACT_NAME" \
+          --arg sbomFileName "${{ inputs.sbom-artifact-name }}" \
+          --arg owner "${DC_OWNER}" \
+          --arg repo "${DC_REPO}" \
+          --arg repository "$REPO_FULL_NAME" \
+          --arg ref "${GITHUB_REF:-${DC_REF}}" \
+          --arg refName "$REF_NAME" \
+          --arg sha "${GITHUB_SHA:-}" \
+          --arg workflow "${GITHUB_WORKFLOW:-}" \
+          --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
+          --arg job "${GITHUB_JOB:-}" \
+          --arg runId "${GITHUB_RUN_ID:-}" \
+          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          --arg eventName "${GITHUB_EVENT_NAME:-}" \
+          '{
+            correlationId: $correlationId,
+            artifactId: $artifactId,
+            artifactName: $artifactName,
+            sbomFileName: $sbomFileName,
+            github: {
+              repository: $repository,
+              owner: $owner,
+              repo: $repo,
+              ref: $ref,
+              refName: $refName,
+              sha: $sha,
+              eventName: $eventName,
+              workflow: $workflow,
+              workflowRef: $workflowRef,
+              job: $job,
+              runId: $runId,
+              runAttempt: $runAttempt
+            }
+          }' > "$payload_file"
+
+        echo "Triggering backend SBOM processing at: $URL (artifactId=$ARTIFACT_ID, artifactName=$ARTIFACT_NAME, correlationId=$CORRELATION_ID)"
+
+        raw="$(curl -sS -X POST "$URL" \
+          -H "Content-Type: application/json" \
+          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          --data-binary @"$payload_file" \
+          -w $'\n%{http_code}')"
+
+        rm -f "$payload_file"
+
+        body="${raw%$'\n'*}"
+        status="${raw##*$'\n'}"
+
+        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
+          echo "Failed to trigger SBOM processing (no HTTP status). Response: $raw" >&2
+          exit 1
+        fi
+
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "Failed to trigger SBOM processing (HTTP $status). Response body: $body" >&2
+          exit 1
+        fi
+
+        echo "Backend SBOM processing triggered successfully (HTTP $status)"
