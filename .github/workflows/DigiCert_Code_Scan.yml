@@ -108,21 +108,33 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: Run Trivy to generate SBOM
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          scan-type: 'fs'
-          format: 'cyclonedx'
-          output: 'sbom-cdxgen.cyclonedx.json'
-          cache: false
-      
+  
+      - name: Install Trivy (pinned; asset discovered via checksums)
+        env:
+          TRIVY_VERSION: "0.65.0"
+        run: |
+          set -euo pipefail
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -fsSLo trivy_checksums.txt "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          asset="$(awk '($2 ~ /trivy_'"${TRIVY_VERSION}"'_Linux-(64bit|x86_64)\.tar\.gz$/){print $2; exit}' trivy_checksums.txt)"
+          curl -fsSLo trivy.tar.gz "${base}/${asset}"
+          grep " ${asset}$" trivy_checksums.txt | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+  
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          trivy fs --cache-dir /tmp/trivy-cache --format cyclonedx --output sbom-cdxgen.cyclonedx.json .
+  
       - name: Upload SBOM as artifact
         uses: actions/upload-artifact@v4
         with:
           name: sbom-cdxgen
-          path: |
-            sbom-cdxgen.cyclonedx.json
+          path: sbom-cdxgen.cyclonedx.json
+              sbom-cdxgen.cyclonedx.json
