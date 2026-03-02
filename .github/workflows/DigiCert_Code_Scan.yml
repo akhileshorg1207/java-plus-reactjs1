@@ -118,6 +118,7 @@ jobs:
           scan-type: 'fs'
           format: 'cyclonedx'
           output: 'sbom-cdxgen.cyclonedx.json'
+          token-setup-trivy: ${{ secrets.PAT_TOKEN }}
       
       - name: Upload SBOM as artifact
         uses: actions/upload-artifact@v4
