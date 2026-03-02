@@ -118,6 +118,7 @@ jobs:
           scan-type: 'fs'
           format: 'cyclonedx'
           output: 'sbom-cdxgen.cyclonedx.json'
+          cache: false
       
       - name: Upload SBOM as artifact
         uses: actions/upload-artifact@v4
