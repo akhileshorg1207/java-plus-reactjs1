@@ -11,91 +11,9 @@ inputs:
   backend-api-key:
     description: "API key for DigiCert backend (pass via secrets)"
     required: true
-
-  owner:
-    description: "Repo owner/org. Default: github.repository_owner"
-    required: false
-    default: ""
-
-  repo:
-    description: "Repo name (without owner). Default: parsed from github.repository"
-    required: false
-    default: ""
-
-  ref:
-    description: "Git ref to resolve languages for (optional)."
-    required: false
-    default: ""
-
-  languages:
-    description: "Comma-separated CodeQL languages, or 'auto' to fetch from backend"
-    required: false
-    default: "auto"
-
-  build-mode:
-    description: "CodeQL build-mode (none, autobuild, manual)"
-    required: false
-    default: "none"
-
-  sarif-output:
-    description: "SARIF output file path"
-    required: false
-    default: "codeql.sarif"
-
-  sarif-artifact-name:
-    description: "Artifact name for SARIF upload"
-    required: false
-    default: "digicert_scan_results"
-
-  upload-sarif-artifact:
-    description: "Upload SARIF artifact (true/false)"
-    required: false
-    default: "true"
-
-  post-sarif-to-backend:
-    description: "POST SARIF result to backend API (true/false)"
-    required: false
-    default: "false"
-
-  sarif-post-endpoint:
-    description: "Backend endpoint path for SARIF ingestion (path only, appended to BACKEND_BASE_URL)"
-    required: false
-    default: "/releasemonitor/api/v1/gha/code-analysis/sarif"
-
-  workflow-correlation-id:
-    description: "Optional correlation id to group multi-language SARIF posts under the same workflow run"
-    required: false
-    default: ""
-
   scan-name:
-    description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (scanName + branch + commitSha). When set, the action may skip if a scan already completed."
-    required: false
-    default: ""
-
-  sarif-post-mode:
-    description: "How to POST SARIF when multiple files exist: 'merged' (single call) or 'per-file' (one call per SARIF file)"
-    required: false
-    default: "merged"
-
-  generate-sbom:
-    description: "Generate SBOM using Trivy (true/false)"
-    required: false
-    default: "true"
-
-  sbom-output:
-    description: "SBOM output file path (CycloneDX JSON)"
-    required: false
-    default: "sbom.cyclonedx.json"
-
-  sbom-artifact-name:
-    description: "Artifact name for SBOM upload"
-    required: false
-    default: "sbom-cyclonedx"
-
-  sbom-post-endpoint:
-    description: "Backend endpoint path for SBOM ingestion (path only, appended to BACKEND_BASE_URL)"
-    required: false
-    default: "/releasemonitor/api/v1/gha/code-analysis/sbom"
+    description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (scanName + branch + commitSha)."
+    required: true
 
 runs:
   using: "composite"
@@ -125,41 +43,45 @@ runs:
       run: |
         set -euo pipefail
 
-        OWNER_INPUT="${{ inputs.owner }}"
-        REPO_INPUT="${{ inputs.repo }}"
-        REF_INPUT="${{ inputs.ref }}"
-
-        if [ -z "$OWNER_INPUT" ]; then
-          OWNER_INPUT="${GITHUB_REPOSITORY_OWNER:-}"
-        fi
-
-        if [ -z "$REPO_INPUT" ]; then
-          # GITHUB_REPOSITORY = owner/repo
-          REPO_INPUT="${GITHUB_REPOSITORY#*/}"
-        fi
-
-        if [ -z "$OWNER_INPUT" ] || [ -z "$REPO_INPUT" ] || [ "$REPO_INPUT" = "$GITHUB_REPOSITORY" ]; then
-          echo "Could not resolve owner/repo from GitHub context. Pass inputs.owner and inputs.repo explicitly." >&2
+        if [ -z "${GITHUB_REPOSITORY_OWNER:-}" ] || [ -z "${GITHUB_REPOSITORY:-}" ]; then
+          echo "Missing GitHub repository context (GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY)." >&2
           exit 1
         fi
 
-        if [ -z "$REF_INPUT" ]; then
-          REF_INPUT="${GITHUB_REF}"
+        # GITHUB_REPOSITORY = owner/repo
+        DC_OWNER="${GITHUB_REPOSITORY_OWNER}"
+        DC_REPO="${GITHUB_REPOSITORY#*/}"
+        DC_REF="${GITHUB_REF:-}"
+
+        if [ -z "$DC_REPO" ] || [ "$DC_REPO" = "$GITHUB_REPOSITORY" ]; then
+          echo "Could not parse repo name from GITHUB_REPOSITORY=$GITHUB_REPOSITORY" >&2
+          exit 1
         fi
 
-        echo "DC_OWNER=$OWNER_INPUT" >> "$GITHUB_ENV"
-        echo "DC_REPO=$REPO_INPUT" >> "$GITHUB_ENV"
-        echo "DC_REF=$REF_INPUT" >> "$GITHUB_ENV"
+        echo "DC_OWNER=$DC_OWNER" >> "$GITHUB_ENV"
+        echo "DC_REPO=$DC_REPO" >> "$GITHUB_ENV"
+        echo "DC_REF=$DC_REF" >> "$GITHUB_ENV"
+
+        # Action constants (avoid additional inputs).
+        echo "DC_CODEQL_BUILD_MODE=none" >> "$GITHUB_ENV"
+        echo "DC_SARIF_OUTPUT=codeql.sarif" >> "$GITHUB_ENV"
+        echo "DC_SARIF_ARTIFACT_NAME=digicert_scan_results" >> "$GITHUB_ENV"
+        echo "DC_SBOM_OUTPUT=sbom.cyclonedx.json" >> "$GITHUB_ENV"
+        echo "DC_SBOM_ARTIFACT_NAME=sbom-cyclonedx" >> "$GITHUB_ENV"
 
         # Default: run the scan unless backend prepare says otherwise.
         echo "DC_SHOULD_RUN=true" >> "$GITHUB_ENV"
 
     - name: Prepare Code Analysis Scan (scan-name)
-      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.scan-name != '' }}
       id: cas_prepare
       shell: bash
       run: |
         set -euo pipefail
+
+        if [ -z "${{ inputs.scan-name }}" ]; then
+          echo "scan-name input is required." >&2
+          exit 1
+        fi
 
         URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans/prepare"
         echo "Preparing CAS at: $URL"
@@ -178,6 +100,10 @@ runs:
           --arg sha "${GITHUB_SHA:-}" \
           --arg runId "${GITHUB_RUN_ID:-}" \
           --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
+          --arg workflow "${GITHUB_WORKFLOW:-}" \
+          --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
+          --arg job "${GITHUB_JOB:-}" \
+          --arg eventName "${GITHUB_EVENT_NAME:-}" \
           ' {
               scanName: $scanName,
               github: {
@@ -187,6 +113,10 @@ runs:
                 ref: $ref,
                 refName: $refName,
                 sha: $sha,
+                eventName: $eventName,
+                workflow: $workflow,
+                workflowRef: $workflowRef,
+                job: $job,
                 runId: $runId,
                 runAttempt: $runAttempt
               }
@@ -236,86 +166,12 @@ runs:
           echo "Scan already completed or in progress; skipping (shouldRun=$SHOULD_RUN)."
         fi
 
-    - name: Create Code Analysis Scan (CAS) on backend
-      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.scan-name == '' }}
-      id: cas
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans"
-        echo "Creating CAS at: $URL"
-
-        REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
-        REF_NAME="${GITHUB_REF_NAME:-}"
-
-        payload_file="$(mktemp)"
-        jq -n \
-          --arg repository "$REPO_FULL_NAME" \
-          --arg owner "${DC_OWNER}" \
-          --arg repo "${DC_REPO}" \
-          --arg ref "${GITHUB_REF:-${DC_REF}}" \
-          --arg refName "$REF_NAME" \
-          --arg sha "${GITHUB_SHA:-}" \
-          --arg runId "${GITHUB_RUN_ID:-}" \
-          --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
-          ' {
-              github: {
-                repository: $repository,
-                owner: $owner,
-                repo: $repo,
-                ref: $ref,
-                refName: $refName,
-                sha: $sha,
-                runId: $runId,
-                runAttempt: $runAttempt
-              }
-            } ' > "$payload_file"
-
-        raw="$(curl -sS -X POST "$URL" \
-          -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
-          --data-binary @"$payload_file" \
-          -w $'\n%{http_code}')"
-
-        rm -f "$payload_file"
-
-        body="${raw%$'\n'*}"
-        status="${raw##*$'\n'}"
-
-        if [ -z "$status" ] || ! [[ "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
-          echo "Failed to create CAS (no HTTP status). Response: $raw" >&2
-          exit 1
-        fi
-
-        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-          echo "Failed to create CAS (HTTP $status). Response body: $body" >&2
-          exit 1
-        fi
-
-        CAS_ID="$(echo "$body" | jq -r '.id // empty')"
-        if [ -z "$CAS_ID" ]; then
-          echo "Backend did not return CAS id. Response body: $body" >&2
-          exit 1
-        fi
-
-        echo "DC_CAS_ID=$CAS_ID" >> "$GITHUB_ENV"
-        echo "id=$CAS_ID" >> "$GITHUB_OUTPUT"
-
     - name: Resolve CodeQL languages
       id: langs
       shell: bash
       if: ${{ env.DC_SHOULD_RUN == 'true' }}
       run: |
         set -euo pipefail
-
-        if [ "${{ inputs.languages }}" != "auto" ]; then
-          # normalize commas/spaces
-          LANGS="$(echo "${{ inputs.languages }}" | tr -d ' ' )"
-          echo "LANGS=$LANGS" >> "$GITHUB_ENV"
-          echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
 
         URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/languages"
         echo "Fetching languages from: $URL"
@@ -371,59 +227,50 @@ runs:
       uses: github/codeql-action/init@v3
       with:
         languages: ${{ steps.langs.outputs.languages }}
-        build-mode: ${{ inputs.build-mode }}
+        build-mode: ${{ env.DC_CODEQL_BUILD_MODE }}
 
     - name: Perform CodeQL Analysis
       if: ${{ env.DC_SHOULD_RUN == 'true' }}
       uses: github/codeql-action/analyze@v3
       with:
         upload: false
-        output: ${{ inputs.sarif-output }}
+        output: ${{ env.DC_SARIF_OUTPUT }}
 
     - name: Upload SARIF result as artifact
-      if: ${{ inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       id: upload_sarif
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.sarif-artifact-name }}
-        path: ${{ inputs.sarif-output }}
+        name: ${{ env.DC_SARIF_ARTIFACT_NAME }}
+        path: ${{ env.DC_SARIF_OUTPUT }}
 
     - name: Post SARIF to backend
-      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.upload-sarif-artifact == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
 
         ARTIFACT_ID="${{ steps.upload_sarif.outputs.artifact-id }}"
-        ARTIFACT_NAME="${{ inputs.sarif-artifact-name }}"
+        ARTIFACT_NAME="${DC_SARIF_ARTIFACT_NAME}"
 
         if [ -z "$ARTIFACT_ID" ]; then
           echo "Missing artifact-id from upload-artifact step; cannot trigger backend SARIF processing." >&2
           exit 1
         fi
 
-        ENDPOINT_PATH="${{ inputs.sarif-post-endpoint }}"
-        if [ -z "$ENDPOINT_PATH" ] || [[ "$ENDPOINT_PATH" != /* ]]; then
-          echo "sarif-post-endpoint must be a non-empty absolute path starting with '/'" >&2
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/sarif"
+
+        if [ -z "${DC_CAS_ID:-}" ]; then
+          echo "No DC_CAS_ID set; cannot correlate SARIF to a scan." >&2
           exit 1
         fi
-
-        URL="${BACKEND_BASE_URL}${ENDPOINT_PATH}"
-
-        CORRELATION_ID_INPUT="${{ inputs.workflow-correlation-id }}"
-        if [ -n "$CORRELATION_ID_INPUT" ]; then
-          CORRELATION_ID="$CORRELATION_ID_INPUT"
-        elif [ -n "${DC_CAS_ID:-}" ]; then
-          CORRELATION_ID="$DC_CAS_ID"
-        else
-          CORRELATION_ID="gha:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_REPOSITORY}:${GITHUB_SHA}"
-        fi
+        CORRELATION_ID="$DC_CAS_ID"
 
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
 
-        # For best per-language behavior, run this composite action once per language (matrix)
-        # and set inputs.languages to a single language and inputs.sarif-output to a language-specific file.
+        # For best per-language behavior, run one job per language (matrix)
+        # and post each language's SARIF separately.
         LANGS_RAW="${{ steps.langs.outputs.languages }}"
         LANGS_CSV="$(echo "$LANGS_RAW" | tr -d ' ' || true)"
         if [ -z "$LANGS_CSV" ]; then
@@ -498,7 +345,7 @@ runs:
         echo "Backend SARIF processing triggered successfully (HTTP $status)"
 
     - name: Finalize CAS on backend
-      if: ${{ always() && inputs.post-sarif-to-backend == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ always() && env.DC_SHOULD_RUN == 'true' }}
       continue-on-error: true
       shell: bash
       run: |
@@ -550,23 +397,23 @@ runs:
         echo "Finalize CAS succeeded (HTTP $status)"
 
     - name: Generate SBOM (Trivy CycloneDX)
-      if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       uses: aquasecurity/trivy-action@0.33.1
       with:
         scan-type: "fs"
         format: "cyclonedx"
-        output: ${{ inputs.sbom-output }}
+        output: ${{ env.DC_SBOM_OUTPUT }}
 
     - name: Upload SBOM as artifact
-      if: ${{ inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       id: upload_sbom
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.sbom-artifact-name }}
-        path: ${{ inputs.sbom-output }}
+        name: ${{ env.DC_SBOM_ARTIFACT_NAME }}
+        path: ${{ env.DC_SBOM_OUTPUT }}
 
     - name: Post SBOM to backend
-      if: ${{ inputs.post-sarif-to-backend == 'true' && inputs.generate-sbom == 'true' && env.DC_SHOULD_RUN == 'true' }}
+      if: ${{ env.DC_SHOULD_RUN == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -577,27 +424,16 @@ runs:
         fi
 
         ARTIFACT_ID="${{ steps.upload_sbom.outputs.artifact-id }}"
-        ARTIFACT_NAME="${{ inputs.sbom-artifact-name }}"
+        ARTIFACT_NAME="${DC_SBOM_ARTIFACT_NAME}"
 
         if [ -z "$ARTIFACT_ID" ]; then
           echo "Missing artifact-id from upload-artifact step; cannot trigger backend SBOM processing." >&2
           exit 1
         fi
 
-        ENDPOINT_PATH="${{ inputs.sbom-post-endpoint }}"
-        if [ -z "$ENDPOINT_PATH" ] || [[ "$ENDPOINT_PATH" != /* ]]; then
-          echo "sbom-post-endpoint must be a non-empty absolute path starting with '/'" >&2
-          exit 1
-        fi
+        URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/sbom"
 
-        URL="${BACKEND_BASE_URL}${ENDPOINT_PATH}"
-
-        CORRELATION_ID_INPUT="${{ inputs.workflow-correlation-id }}"
-        if [ -n "$CORRELATION_ID_INPUT" ]; then
-          CORRELATION_ID="$CORRELATION_ID_INPUT"
-        else
-          CORRELATION_ID="$DC_CAS_ID"
-        fi
+        CORRELATION_ID="$DC_CAS_ID"
 
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
@@ -607,7 +443,7 @@ runs:
           --arg correlationId "$CORRELATION_ID" \
           --arg artifactId "$ARTIFACT_ID" \
           --arg artifactName "$ARTIFACT_NAME" \
-          --arg sbomFileName "${{ inputs.sbom-artifact-name }}" \
+          --arg sbomFileName "${DC_SBOM_ARTIFACT_NAME}" \
           --arg owner "${DC_OWNER}" \
           --arg repo "${DC_REPO}" \
           --arg repository "$REPO_FULL_NAME" \
