@@ -104,3 +104,24 @@ jobs:
         with:
           name: codeql-sarif-results
           path: codeql-sarif-results.zip
+
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy to generate SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'cyclonedx'
+          output: 'sbom-cdxgen.cyclonedx.json'
+      
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cdxgen
+          path: |
+            sbom-cdxgen.cyclonedx.json
