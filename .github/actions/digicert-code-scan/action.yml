@@ -3,17 +3,17 @@ description: "Runs CodeQL multi-language scan (languages auto from backend) and 
 author: "DigiCert"
 
 inputs:
-  backend-env:
+  env:
     description: "Backend environment to use (prod|stage)"
     required: false
     default: "prod"
 
-  backend-api-key:
+  api-key:
     description: "API key for DigiCert backend (pass via secrets)"
     required: true
   scan-name:
     description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (scanName + branch + commitSha)."
-    required: true
+    required: false
 
 runs:
   using: "composite"
@@ -22,7 +22,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        case "${{ inputs.backend-env }}" in
+        case "${{ inputs.env }}" in
           prod)
             echo "BACKEND_BASE_URL=__PROD_BASE_URL__" >> "$GITHUB_ENV"
             ;;
@@ -30,7 +30,7 @@ runs:
             echo "BACKEND_BASE_URL=https://lucila-brashier-paxton.ngrok-free.dev" >> "$GITHUB_ENV"
             ;;
           *)
-            echo "Unsupported backend-env: '${{ inputs.backend-env }}' (use prod|stage)" >&2
+            echo "Unsupported env: '${{ inputs.env }}' (use prod|stage)" >&2
             exit 1
             ;;
         esac
@@ -78,10 +78,23 @@ runs:
       run: |
         set -euo pipefail
 
-        if [ -z "${{ inputs.scan-name }}" ]; then
-          echo "scan-name input is required." >&2
-          exit 1
+        SCAN_NAME_RAW="${{ inputs.scan-name }}"
+        SCAN_NAME="$SCAN_NAME_RAW"
+        if [ -z "$SCAN_NAME" ] || [ "$SCAN_NAME" = "null" ]; then
+          WF="${GITHUB_WORKFLOW:-code-analysis-scan}"
+          EVT="${GITHUB_EVENT_NAME:-manual}"
+          SCAN_NAME="${WF}-${EVT}"
         fi
+
+        SCAN_NAME="$(echo "$SCAN_NAME" | \
+          sed -E 's/[[:space:]]+/-/g; s#[/\\\\]+#-#g; s/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//' | \
+          cut -c1-100)"
+
+        if [ -z "$SCAN_NAME" ]; then
+          SCAN_NAME="code-analysis-${GITHUB_EVENT_NAME:-manual}"
+        fi
+
+        echo "DC_SCAN_NAME=$SCAN_NAME" >> "$GITHUB_ENV"
 
         URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans/prepare"
         echo "Preparing CAS at: $URL"
@@ -91,7 +104,7 @@ runs:
 
         payload_file="$(mktemp)"
         jq -n \
-          --arg scanName "${{ inputs.scan-name }}" \
+          --arg scanName "$SCAN_NAME" \
           --arg repository "$REPO_FULL_NAME" \
           --arg owner "${DC_OWNER}" \
           --arg repo "${DC_REPO}" \
@@ -124,7 +137,7 @@ runs:
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          -H "X-API-KEY: ${{ inputs.api-key }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -180,13 +193,13 @@ runs:
         # Capture body + status code to handle API errors gracefully.
         if [ -n "${DC_REF}" ]; then
           RAW="$(curl -sS -G "$URL" \
-            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+            -H "X-API-KEY: ${{ inputs.api-key }}" \
             --data-urlencode "repo=${DC_REPO}" \
             --data-urlencode "ref=${DC_REF}" \
             -w $'\n%{http_code}')"
         else
           RAW="$(curl -sS -G "$URL" \
-            -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+            -H "X-API-KEY: ${{ inputs.api-key }}" \
             --data-urlencode "repo=${DC_REPO}" \
             -w $'\n%{http_code}')"
         fi
@@ -323,7 +336,7 @@ runs:
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          -H "X-API-KEY: ${{ inputs.api-key }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -375,7 +388,7 @@ runs:
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          -H "X-API-KEY: ${{ inputs.api-key }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -481,7 +494,7 @@ runs:
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
-          -H "X-API-KEY: ${{ inputs.backend-api-key }}" \
+          -H "X-API-KEY: ${{ inputs.api-key }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
