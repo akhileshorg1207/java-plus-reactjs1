@@ -8,6 +8,10 @@ inputs:
     required: false
     default: "prod"
 
+  region:
+    description: "DC One region for authentication/routing (required)"
+    required: true
+
   api-key:
     description: "API key for DigiCert backend (pass via secrets)"
     required: true
@@ -138,6 +142,7 @@ runs:
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
+          -H "X-DCONE-REGION: ${{ inputs.region }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -194,12 +199,14 @@ runs:
         if [ -n "${DC_REF}" ]; then
           RAW="$(curl -sS -G "$URL" \
             -H "X-API-KEY: ${{ inputs.api-key }}" \
+            -H "X-DCONE-REGION: ${{ inputs.region }}" \
             --data-urlencode "repo=${DC_REPO}" \
             --data-urlencode "ref=${DC_REF}" \
             -w $'\n%{http_code}')"
         else
           RAW="$(curl -sS -G "$URL" \
             -H "X-API-KEY: ${{ inputs.api-key }}" \
+            -H "X-DCONE-REGION: ${{ inputs.region }}" \
             --data-urlencode "repo=${DC_REPO}" \
             -w $'\n%{http_code}')"
         fi
@@ -337,6 +344,7 @@ runs:
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
+          -H "X-DCONE-REGION: ${{ inputs.region }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -389,6 +397,7 @@ runs:
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
+          -H "X-DCONE-REGION: ${{ inputs.region }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
@@ -495,6 +504,7 @@ runs:
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
+          -H "X-DCONE-REGION: ${{ inputs.region }}" \
           --data-binary @"$payload_file" \
           -w $'\n%{http_code}')"
 
