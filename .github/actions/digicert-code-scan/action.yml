@@ -210,7 +210,7 @@ runs:
         fi
 
         CAS_ID="$(echo "$body" | jq -r '.id // empty')"
-        SHOULD_RUN="$(echo "$body" | jq -r '.shouldRun // empty')"
+        SHOULD_RUN="$(echo "$body" | jq -r 'if has("shouldRun") then (.shouldRun | tostring) else empty end')"
 
         if [ -z "$CAS_ID" ]; then
           echo "Backend did not return CAS id. Response body: $body" >&2
