@@ -15,8 +15,17 @@ inputs:
   api-key:
     description: "API key for DigiCert backend (pass via secrets)"
     required: true
-  scan-name:
-    description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (scanName + branch + commitSha)."
+  name:
+    description: "Repo-scoped scan name used to create/find a DC One external release and dedupe scans by (name + branch + commitSha). If with-release is true, this must be provided."
+    required: false
+
+  with-release:
+    description: "When true, require name and tag and build the scan name as '<name>-<tag>' so runs align with a specific release tag."
+    required: false
+    default: "false"
+
+  tag:
+    description: "Release tag used only when with-release is true (required when with-release is true)."
     required: false
 
 runs:
@@ -76,19 +85,57 @@ runs:
         # Default: run the scan unless backend prepare says otherwise.
         echo "DC_SHOULD_RUN=true" >> "$GITHUB_ENV"
 
-    - name: Prepare Code Analysis Scan (scan-name)
+    - name: Prepare Code Analysis Scan (name)
       id: cas_prepare
       shell: bash
       run: |
         set -euo pipefail
 
-        SCAN_NAME_RAW="${{ inputs.scan-name }}"
-        SCAN_NAME="$SCAN_NAME_RAW"
-        if [ -z "$SCAN_NAME" ] || [ "$SCAN_NAME" = "null" ]; then
-          WF="${GITHUB_WORKFLOW:-code-analysis-scan}"
-          EVT="${GITHUB_EVENT_NAME:-manual}"
-          SCAN_NAME="${WF}-${EVT}"
+        WITH_RELEASE_RAW="${{ inputs.with-release }}"
+        WITH_RELEASE="$(echo "${WITH_RELEASE_RAW:-false}" | tr '[:upper:]' '[:lower:]' | xargs)"
+        if [ -z "$WITH_RELEASE" ]; then
+          WITH_RELEASE="false"
         fi
+
+        case "$WITH_RELEASE" in
+          true|false)
+            ;;
+          *)
+            echo "Invalid with-release input: '$WITH_RELEASE_RAW' (use true|false)" >&2
+            exit 1
+            ;;
+        esac
+
+        if [ "$WITH_RELEASE" = "true" ]; then
+          WITH_RELEASE_JSON=true
+        else
+          WITH_RELEASE_JSON=false
+        fi
+
+        NAME_RAW="${{ inputs.name }}"
+        TAG_RAW="${{ inputs.tag }}"
+        TAG="$(echo "${TAG_RAW:-}" | xargs || true)"
+
+        if [ "$WITH_RELEASE" = "true" ]; then
+          if [ -z "$NAME_RAW" ] || [ "$NAME_RAW" = "null" ]; then
+            echo "Input 'name' is required when with-release is true." >&2
+            exit 1
+          fi
+          if [ -z "$TAG_RAW" ] || [ "$TAG_RAW" = "null" ]; then
+            echo "Input 'tag' is required when with-release is true." >&2
+            exit 1
+          fi
+          SCAN_NAME_RAW="${NAME_RAW}-${TAG_RAW}"
+        else
+          SCAN_NAME_RAW="$NAME_RAW"
+          if [ -z "$SCAN_NAME_RAW" ] || [ "$SCAN_NAME_RAW" = "null" ]; then
+            WF="${GITHUB_WORKFLOW:-code-analysis-scan}"
+            EVT="${GITHUB_EVENT_NAME:-manual}"
+            SCAN_NAME_RAW="${WF}-${EVT}"
+          fi
+        fi
+
+        SCAN_NAME="$SCAN_NAME_RAW"
 
         SCAN_NAME="$(echo "$SCAN_NAME" | \
           sed -E 's/[[:space:]]+/-/g; s#[/\\\\]+#-#g; s/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//' | \
@@ -106,9 +153,10 @@ runs:
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
 
-        payload_file="$(mktemp)"
-        jq -n \
+        payload="$(jq -cn \
           --arg scanName "$SCAN_NAME" \
+          --argjson withRelease "$WITH_RELEASE_JSON" \
+          --arg tag "$TAG" \
           --arg repository "$REPO_FULL_NAME" \
           --arg owner "${DC_OWNER}" \
           --arg repo "${DC_REPO}" \
@@ -121,32 +169,32 @@ runs:
           --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
           --arg job "${GITHUB_JOB:-}" \
           --arg eventName "${GITHUB_EVENT_NAME:-}" \
-          ' {
-              scanName: $scanName,
-              github: {
-                repository: $repository,
-                owner: $owner,
-                repo: $repo,
-                ref: $ref,
-                refName: $refName,
-                sha: $sha,
-                eventName: $eventName,
-                workflow: $workflow,
-                workflowRef: $workflowRef,
-                job: $job,
-                runId: $runId,
-                runAttempt: $runAttempt
-              }
-            } ' > "$payload_file"
+          '{
+            scanName: $scanName,
+            withRelease: $withRelease,
+            tag: $tag,
+            github: {
+              repository: $repository,
+              owner: $owner,
+              repo: $repo,
+              ref: $ref,
+              refName: $refName,
+              sha: $sha,
+              eventName: $eventName,
+              workflow: $workflow,
+              workflowRef: $workflowRef,
+              job: $job,
+              runId: $runId,
+              runAttempt: $runAttempt
+            }
+          }')"
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
           -H "X-DCONE-REGION: ${{ inputs.region }}" \
-          --data-binary @"$payload_file" \
+          --data-raw "$payload" \
           -w $'\n%{http_code}')"
-
-        rm -f "$payload_file"
 
         body="${raw%$'\n'*}"
         status="${raw##*$'\n'}"
@@ -297,8 +345,7 @@ runs:
           LANGS_CSV="auto"
         fi
 
-        payload_file="$(mktemp)"
-        jq -n \
+        payload="$(jq -cn \
           --arg correlationId "$CORRELATION_ID" \
           --arg artifactId "$ARTIFACT_ID" \
           --arg artifactName "$ARTIFACT_NAME" \
@@ -337,7 +384,7 @@ runs:
               languages: ($languages | split(",") | map(select(length > 0)))
             },
             sarifFileName: "artifact.zip"
-          }' > "$payload_file"
+          }')"
 
         echo "Triggering backend SARIF processing at: $URL (artifactId=$ARTIFACT_ID, artifactName=$ARTIFACT_NAME)"
 
@@ -345,10 +392,8 @@ runs:
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
           -H "X-DCONE-REGION: ${{ inputs.region }}" \
-          --data-binary @"$payload_file" \
+          --data-raw "$payload" \
           -w $'\n%{http_code}')"
-
-        rm -f "$payload_file"
 
         body="${raw%$'\n'*}"
         status="${raw##*$'\n'}"
@@ -387,21 +432,18 @@ runs:
         URL="${BACKEND_BASE_URL}/releasemonitor/api/v1/gha/code-analysis/scans/${DC_CAS_ID}/finalize"
         echo "Finalizing CAS ${DC_CAS_ID} at: $URL (status=${FINAL_STATUS}, job.status=${JOB_STATUS})"
 
-        payload_file="$(mktemp)"
-        jq -n \
+        payload="$(jq -cn \
           --arg status "$FINAL_STATUS" \
           --arg message "Composite action finalized with job.status=${JOB_STATUS}" \
           --arg failureStage "composite" \
-          '{ status: $status, message: $message, failureStage: $failureStage }' > "$payload_file"
+          '{ status: $status, message: $message, failureStage: $failureStage }')"
 
         raw="$(curl -sS -X POST "$URL" \
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
           -H "X-DCONE-REGION: ${{ inputs.region }}" \
-          --data-binary @"$payload_file" \
+          --data-raw "$payload" \
           -w $'\n%{http_code}')"
-
-        rm -f "$payload_file"
 
         body="${raw%$'\n'*}"
         status="${raw##*$'\n'}"
@@ -420,7 +462,7 @@ runs:
 
     - name: Generate SBOM (Trivy CycloneDX)
       if: ${{ env.DC_SHOULD_RUN == 'true' }}
-      uses: aquasecurity/trivy-action@0.33.1
+      uses: aquasecurity/trivy-action@master
       with:
         scan-type: "fs"
         format: "cyclonedx"
@@ -441,7 +483,7 @@ runs:
         set -euo pipefail
 
         if [ -z "${DC_CAS_ID:-}" ]; then
-          echo "No DC_CAS_ID set; cannot correlate SBOM to a scan. Enable scan-name flow or ensure CAS creation runs." >&2
+          echo "No DC_CAS_ID set; cannot correlate SBOM to a scan. Enable the prepare flow or ensure CAS creation runs." >&2
           exit 1
         fi
 
@@ -460,8 +502,7 @@ runs:
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
 
-        payload_file="$(mktemp)"
-        jq -n \
+        payload="$(jq -cn \
           --arg correlationId "$CORRELATION_ID" \
           --arg artifactId "$ARTIFACT_ID" \
           --arg artifactName "$ARTIFACT_NAME" \
@@ -497,7 +538,7 @@ runs:
               runId: $runId,
               runAttempt: $runAttempt
             }
-          }' > "$payload_file"
+          }')"
 
         echo "Triggering backend SBOM processing at: $URL (artifactId=$ARTIFACT_ID, artifactName=$ARTIFACT_NAME, correlationId=$CORRELATION_ID)"
 
@@ -505,10 +546,8 @@ runs:
           -H "Content-Type: application/json" \
           -H "X-API-KEY: ${{ inputs.api-key }}" \
           -H "X-DCONE-REGION: ${{ inputs.region }}" \
-          --data-binary @"$payload_file" \
+          --data-raw "$payload" \
           -w $'\n%{http_code}')"
-
-        rm -f "$payload_file"
 
         body="${raw%$'\n'*}"
         status="${raw##*$'\n'}"
