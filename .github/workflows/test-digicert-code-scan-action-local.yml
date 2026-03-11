@@ -25,3 +25,4 @@ jobs:
           region: cluster-local
           api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
           with-release: true
+          name: prod-release
