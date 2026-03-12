@@ -26,3 +26,4 @@ jobs:
           api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
           with-release: true
           name: prod-release
+          tag: v1.0.0
