@@ -8,6 +8,10 @@ inputs:
     required: false
     default: "prod"
 
+  override-backend-host:
+    description: "Developer-only override for BACKEND_BASE_URL (e.g., ngrok URL). When set, takes precedence over env. Must start with http:// or https://"
+    required: false
+
   region:
     description: "DC One region for authentication/routing (required)"
     required: true
@@ -35,12 +39,29 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        OVERRIDE_RAW="${{ inputs.override-backend-host }}"
+        OVERRIDE="$(echo "${OVERRIDE_RAW:-}" | xargs || true)"
+        if [ -n "$OVERRIDE" ] && [ "$OVERRIDE" != "null" ]; then
+          case "$OVERRIDE" in
+            http://*|https://*)
+              ;;
+            *)
+              echo "override-backend-host must start with http:// or https:// (got: '$OVERRIDE')" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "BACKEND_BASE_URL=$OVERRIDE" >> "$GITHUB_ENV"
+          exit 0
+        fi
+
         case "${{ inputs.env }}" in
           prod)
-            echo "BACKEND_BASE_URL=__PROD_BASE_URL__" >> "$GITHUB_ENV"
+            echo "BACKEND_BASE_URL=https://releasemonitor.digicert.com" >> "$GITHUB_ENV"
             ;;
           stage)
-            echo "BACKEND_BASE_URL=https://lucila-brashier-paxton.ngrok-free.dev" >> "$GITHUB_ENV"
+            echo "BACKEND_BASE_URL=https://releasemonitor.stage.az.digicert.net" >> "$GITHUB_ENV"
             ;;
           *)
             echo "Unsupported env: '${{ inputs.env }}' (use prod|stage)" >&2
