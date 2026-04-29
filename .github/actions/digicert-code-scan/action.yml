@@ -58,7 +58,7 @@ runs:
 
         case "${{ inputs.env }}" in
           prod)
-            echo "BACKEND_BASE_URL=https://releasemonitor.digicert.com" >> "$GITHUB_ENV"
+            echo "BACKEND_BASE_URL=https://lucila-brashier-paxton.ngrok-free.dev" >> "$GITHUB_ENV"
             ;;
           stage)
             echo "BACKEND_BASE_URL=https://releasemonitor.stage.az.digicert.net" >> "$GITHUB_ENV"

@@ -21,6 +21,5 @@ jobs:
       - name: Run DigiCert Code Scan composite action (local)
         uses: ./.github/actions/digicert-code-scan
         with:
-          override-backend-host: https://lucila-brashier-paxton.ngrok-free.dev
           region: cluster-local
           api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
