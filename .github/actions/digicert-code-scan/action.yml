@@ -173,6 +173,8 @@ runs:
 
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
+        TRIGGERED_BY="${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}"
+        TRIGGER_SOURCE="${GITHUB_EVENT_NAME:-unknown}"
 
         payload="$(jq -cn \
           --arg scanName "$SCAN_NAME" \
@@ -186,6 +188,8 @@ runs:
           --arg sha "${GITHUB_SHA:-}" \
           --arg actor "${GITHUB_ACTOR:-}" \
           --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
+          --arg triggeredBy "$TRIGGERED_BY" \
+          --arg triggerSource "$TRIGGER_SOURCE" \
           --arg runId "${GITHUB_RUN_ID:-}" \
           --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
@@ -205,6 +209,8 @@ runs:
               sha: $sha,
               actor: $actor,
               triggeringActor: $triggeringActor,
+              triggeredBy: $triggeredBy,
+              triggerSource: $triggerSource,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
@@ -361,6 +367,8 @@ runs:
 
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
+        TRIGGERED_BY="${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}"
+        TRIGGER_SOURCE="${GITHUB_EVENT_NAME:-unknown}"
 
         # For best per-language behavior, run one job per language (matrix)
         # and post each language's SARIF separately.
@@ -382,6 +390,8 @@ runs:
           --arg sha "${GITHUB_SHA:-}" \
           --arg actor "${GITHUB_ACTOR:-}" \
           --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
+          --arg triggeredBy "$TRIGGERED_BY" \
+          --arg triggerSource "$TRIGGER_SOURCE" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
           --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
           --arg job "${GITHUB_JOB:-}" \
@@ -402,6 +412,8 @@ runs:
               sha: $sha,
               actor: $actor,
               triggeringActor: $triggeringActor,
+              triggeredBy: $triggeredBy,
+              triggerSource: $triggerSource,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
@@ -530,6 +542,8 @@ runs:
 
         REPO_FULL_NAME="${GITHUB_REPOSITORY:-${DC_OWNER}/${DC_REPO}}"
         REF_NAME="${GITHUB_REF_NAME:-}"
+        TRIGGERED_BY="${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}"
+        TRIGGER_SOURCE="${GITHUB_EVENT_NAME:-unknown}"
 
         payload="$(jq -cn \
           --arg correlationId "$CORRELATION_ID" \
@@ -544,6 +558,8 @@ runs:
           --arg sha "${GITHUB_SHA:-}" \
           --arg actor "${GITHUB_ACTOR:-}" \
           --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
+          --arg triggeredBy "$TRIGGERED_BY" \
+          --arg triggerSource "$TRIGGER_SOURCE" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
           --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
           --arg job "${GITHUB_JOB:-}" \
@@ -564,6 +580,8 @@ runs:
               sha: $sha,
               actor: $actor,
               triggeringActor: $triggeringActor,
+              triggeredBy: $triggeredBy,
+              triggerSource: $triggerSource,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
