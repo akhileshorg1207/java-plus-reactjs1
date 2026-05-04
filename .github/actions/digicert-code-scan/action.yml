@@ -184,6 +184,8 @@ runs:
           --arg ref "${GITHUB_REF:-${DC_REF}}" \
           --arg refName "$REF_NAME" \
           --arg sha "${GITHUB_SHA:-}" \
+          --arg actor "${GITHUB_ACTOR:-}" \
+          --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
           --arg runId "${GITHUB_RUN_ID:-}" \
           --arg runAttempt "${GITHUB_RUN_ATTEMPT:-}" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
@@ -201,6 +203,8 @@ runs:
               ref: $ref,
               refName: $refName,
               sha: $sha,
+              actor: $actor,
+              triggeringActor: $triggeringActor,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
@@ -376,6 +380,8 @@ runs:
           --arg ref "${GITHUB_REF:-${DC_REF}}" \
           --arg refName "$REF_NAME" \
           --arg sha "${GITHUB_SHA:-}" \
+          --arg actor "${GITHUB_ACTOR:-}" \
+          --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
           --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
           --arg job "${GITHUB_JOB:-}" \
@@ -394,6 +400,8 @@ runs:
               ref: $ref,
               refName: $refName,
               sha: $sha,
+              actor: $actor,
+              triggeringActor: $triggeringActor,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
@@ -534,6 +542,8 @@ runs:
           --arg ref "${GITHUB_REF:-${DC_REF}}" \
           --arg refName "$REF_NAME" \
           --arg sha "${GITHUB_SHA:-}" \
+          --arg actor "${GITHUB_ACTOR:-}" \
+          --arg triggeringActor "${GITHUB_TRIGGERING_ACTOR:-}" \
           --arg workflow "${GITHUB_WORKFLOW:-}" \
           --arg workflowRef "${GITHUB_WORKFLOW_REF:-}" \
           --arg job "${GITHUB_JOB:-}" \
@@ -552,6 +562,8 @@ runs:
               ref: $ref,
               refName: $refName,
               sha: $sha,
+              actor: $actor,
+              triggeringActor: $triggeringActor,
               eventName: $eventName,
               workflow: $workflow,
               workflowRef: $workflowRef,
