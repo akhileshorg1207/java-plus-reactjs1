@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run DigiCert Code Scan composite action (local)
-        uses: digicert/digicert-code-monitoring-action@master
+        uses: ./.github/actions/digicert-code-scan
         with:
           region: cluster-local
           api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
