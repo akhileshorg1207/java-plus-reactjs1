@@ -23,3 +23,4 @@ jobs:
         with:
           region: cluster-local
           api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
+          override-backend-host: "https://lucila-brashier-paxton.ngrok-free.dev"
