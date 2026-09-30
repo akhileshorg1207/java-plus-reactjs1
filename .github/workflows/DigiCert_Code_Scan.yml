@@ -1,7 +1,24 @@
 name: DigiCert Code Scan
-on: workflow_dispatch
+
+on:
+  workflow_dispatch:
+
 jobs:
-  noop:
+  analyze:
+    name: DigiCert Code Monitoring
     runs-on: ubuntu-latest
     steps:
-      - run: echo "This is just a placeholder"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: digicert/digicert-code-monitoring-action@copilot/copilotadd-dc-release-id-input
+        with:
+          host: "https://lucila-brashier-paxton.ngrok-free.dev"
+          api-key: ${{ secrets.STAGEAZ_API_KEY }}
+          name: T10-V-Github-Action-V2
+          tag: T10-V-Github-Action-V2
+          with-release: "true"
+          dc-release-id: ea6c92bc-6826-41be-aad5-61d1874f2ef5
+          digicert-cdn: "https://pki-downloads.digicert.com/stm/snapshot/stmclients"
+          use-github-caching-service: "true"
+          use-binary-sha256-checksum: "true"
