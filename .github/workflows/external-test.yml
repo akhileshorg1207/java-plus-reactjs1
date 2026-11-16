@@ -1,0 +1,24 @@
+name: DigiCert External Test
+on:
+  workflow_dispatch:
+    inputs:
+      commit-sha: { required: true }
+      skip-sarif: { default: "false" }
+      skip-sbom: { default: "false" }
+      external-paths: { default: "[]" }
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, actions: read }
+    steps:
+      - uses: digicert/digicert-code-monitoring-action@feature/node-js-conversion
+        with:
+          host: "https://lucila-brashier-paxton.ngrok-free.dev"
+          api-key: ${{ secrets.STAGEAZ_API_KEY }}
+          commit-sha: ${{ inputs.commit-sha }}
+          skip-sarif: ${{ inputs.skip-sarif }}
+          skip-sbom: ${{ inputs.skip-sbom }}
+          external-paths: ${{ inputs.external-paths }}
+          digicert-cdn: "https://pki-downloads.digicert.com/stm/snapshot/stmclients"
+      - if: always()
+        run: ls "$RUNNER_TEMP" | grep dc-external || echo "external files cleaned up"
