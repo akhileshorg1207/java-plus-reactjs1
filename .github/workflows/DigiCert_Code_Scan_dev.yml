@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: inputs['registration-only'] != 'true'
-        uses: digicert/digicert-code-monitoring-action@feature/node-js-conversion
+        uses: digicert/digicert-code-monitoring-action@hackathon/vuln-reachability 
         with:
           host: "https://lucila-brashier-paxton.ngrok-free.dev"
           api-key: ${{ secrets.STAGEAZ_API_KEY }}
@@ -47,3 +47,4 @@ jobs:
           digicert-cdn: "https://pki-downloads.digicert.com/stm/snapshot/stmclients"
           use-github-caching-service: "true"
           use-binary-sha256-checksum: "true"
+          reachability: "true"
