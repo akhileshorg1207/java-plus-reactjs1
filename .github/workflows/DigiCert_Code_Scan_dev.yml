@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: inputs['registration-only'] != 'true'
-        uses: digicert/digicert-code-monitoring-action@hackathon/vuln-reachability 
+        uses: digicert/digicert-code-monitoring-action@v2-dev
         with:
           host: "https://lucila-brashier-paxton.ngrok-free.dev"
           api-key: ${{ secrets.STAGEAZ_API_KEY }}
