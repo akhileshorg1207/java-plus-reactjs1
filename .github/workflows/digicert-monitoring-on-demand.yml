@@ -30,8 +30,8 @@ jobs:
 
       - uses: digicert/digicert-code-monitoring-action@v2-dev
         with:
-          host: "https://one.stage.az.digicert.net"
-          api-key: ${{ secrets.DIGICERT_BACKEND_API_KEY }}
+          host: ${{ vars.DIGICERT_HOST }}
+          api-key: ${{ secrets.STAGEAZ_API_KEY }}
           name: ${{ inputs.name != '' && inputs.name || (inputs.tag != '' && inputs.tag || 'test-action') }}
           tag: ${{ inputs.tag }}
           with-release: ${{ inputs.tag != '' && 'true' || inputs.with-release }}
