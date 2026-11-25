@@ -1,26 +1,42 @@
-name: DigiCert External Test
+name: DigiCert Manual Test
 on:
   workflow_dispatch:
     inputs:
+      host: { required: true }
       commit-sha: { required: true }
+      runner: { default: ubuntu-latest }
+      node-version: { default: "" }
       skip-sarif: { default: "false" }
       skip-sbom: { default: "false" }
-      external-paths: { default: "[]" }
-      name: { default : "test node action" }
+      external-paths: { default: "" }
+      scan-timeout: { default: "600" }
+      languages: { default: "" }
+      digicert-cdn: { default: "https://pki-downloads.digicert.com/stm/snapshot/stmclients" }
+      use-binary-sha256-checksum: { default: "true" }
+      gitleaks-version: { default: "8.18.4" }
 jobs:
-  analyze:
-    runs-on: ubuntu-latest
+  test:
+    runs-on: ${{ inputs.runner }}
     permissions: { contents: read, actions: read }
     steps:
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ inputs.node-version }}" }
+      - run: echo "NODE_BEFORE=$(node --version 2>/dev/null || echo none)" >> "$GITHUB_ENV"
       - uses: digicert/digicert-code-monitoring-action@feature/node-js-conversion
         with:
-          host: "https://lucila-brashier-paxton.ngrok-free.dev"
+          host: ${{ inputs.host }}
           api-key: ${{ secrets.STAGEAZ_API_KEY }}
           commit-sha: ${{ inputs.commit-sha }}
           skip-sarif: ${{ inputs.skip-sarif }}
           skip-sbom: ${{ inputs.skip-sbom }}
           external-paths: ${{ inputs.external-paths }}
-          name: ${{ inputs.name }}
-          digicert-cdn: "https://pki-downloads.digicert.com/stm/snapshot/stmclients"
+          scan-timeout: ${{ inputs.scan-timeout }}
+          languages: ${{ inputs.languages }}
+          digicert-cdn: ${{ inputs.digicert-cdn }}
+          use-binary-sha256-checksum: ${{ inputs.use-binary-sha256-checksum }}
+          gitleaks-version: ${{ inputs.gitleaks-version }}
       - if: always()
-        run: ls "$RUNNER_TEMP" | grep dc-external || echo "external files cleaned up"
+        run: |
+          echo "Node before: $NODE_BEFORE / after: $(node --version 2>/dev/null || echo none)"
+          ls "$RUNNER_TEMP" | grep -E 'dc-external|dc-node|dc-gitleaks' || echo "no leftovers"
